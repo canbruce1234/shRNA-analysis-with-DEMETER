@@ -1,0 +1,10 @@
+# Ignore the following files in this directory
+*gct
+*csv
+*rds
+*Rdata
+.Rhistory
+final/*
+# Except this file
+!.gitignore
+
