@@ -1,0 +1,9 @@
+```
+# Drive Demeter Analyis
+Run on: `r date()` by: can.bruce@sciomix.com
+
+## Background
+
+* Analysis of Drive data using Demeter https://data.mendeley.com/datasets/y3ds55n88r/4
+* These are the raw data from the DRIVE pooled shRNA screen. It contains read counts for 398 cancer cell lines screened for 7837 genes with an average of 20 shRNAs per gene
+* The data was preprocessed to generate drive_input_gct.rds. The original DRIVE data was converted into wide table format, with sequence+Gene symbols for rows, cell lines for columns, and log2(FC) for values. Details of this preprocessing step are given in preprocessing.Rmd notebook in the RSA folder.

@@ -1,0 +1,138 @@
+---
+title: "DEMETER analysis"
+author: "John Bruce"
+date: "12/5/2017"
+output: html_document
+params:
+  learning_rate: 0.005
+  g_s: 4e-5
+  alpha_beta_gamma: 0.9
+  iterations: 10
+  data_source: "data"
+  source_description: "Novartis project DRIVE pooled shRNA screen"
+  qc_genes: "BRAF,KRAS,PRMT5"
+  remote_file_file: "s3://ps-informatics/bioinformatics/data/drive_input_gct2.rds"
+  date: !r format(Sys.Date())
+---
+
+## Background
+
+* Analysis of Drive data using Demeter https://data.mendeley.com/datasets/y3ds55n88r/4
+* These are the raw data from the DRIVE pooled shRNA screen. It contains read counts for 398 cancer cell lines screened for 7837 genes with an average of 20 shRNAs per gene
+* The data was preprocessed to generate drive_input_gct.rds. The original DRIVE data was converted into wide table format, with sequence+Gene symbols for rows, cell lines for columns, and log2(FC) for values. Details of this preprocessing step are given in preprocessing.Rmd notebook in the RSA folder.
+
+## Data processing
+
+Used rmarkdown parameters for passing variables into the document
+```{r setup, echo=FALSE, results='hide'}
+source("setup.R")
+proj_dir <- opts_knit$get("proj.dir")
+opts_knit$set(data.dir = file.path(proj_dir, params$data_source))
+data_dir <- opts_knit$get("data.dir")
+src_dir <- opts_knit$get("src.dir")
+demeter_dir <- opts_knit$get("demeter.dir")
+remote_file <- params$remote_file
+#analysis <- "demeter"
+local_file <- file.path(data_dir,
+                        basename(remote_file))
+# create data directory if it doesn't exist
+#output_dir <- file.path(opts_knit$get("data.dir"),
+#                        analysis,
+#                        params$date)
+#ifelse(!dir.exists(output_dir), 
+#       dir.create(output_dir,recursive=TRUE), FALSE)
+#source(file.path(proj_dir,"src","R","setup.R"))
+Sys.setenv(Remote_File = remote_file,
+           Data_Dir = data_dir,
+           Src_Dir = src_dir,
+           Demeter_Dir = demeter_dir,
+           Local_File = local_file,
+           #Analysis = analysis,
+           Proj_Dir = proj_dir,
+           UUID = uuid, 
+           Run_Date = params$date)
+```
++ Input data download from AWS
+```{bash download_input_from_s3, echo=FALSE}
+echo $Remote_File
+echo $Local_File
+if [ ! -f "$Local_File" ]
+then
+  aws s3 cp $Remote_File $Local_File
+  echo 'Saved file here:' $Data_Dir
+else
+  echo 'File exists...'
+fi
+
+```
+
+### Read in GCT file
++ Basic QC to check missing data
+```{r read_data}
+con <- gzfile(local_file,'rb')
+table <- readRDS(con)
+table[,1] <- paste0(table[,1],'_',table[,2])
+# Rename first two column names
+colnames(table)[c(1:2)] <- c("NAME","Description")
+table[1:5,1:5]
+# Third column not needed
+table <- table[,-3]
+missing_data_cols <- data.frame("sample_name"=names(table)[!!colSums(is.na(table))], 
+                                stringsAsFactors = FALSE)
+drop_cols <- missing_data_cols
+if (length(missing_data_cols$sample_name)>0) {
+  table[, drop_cols$sample_name]
+  # needed to resave file as rds format
+ new_name <- paste("cleaned",basename(local_file),sep="_")
+ local_file <- file.path(opts_knit$get("data.dir"), 
+                  new_name)
+ tryCatch(fwrite(table, file=local_file, sep=" ", quote=TRUE),
+        error = function(e) return(sprintf("Caught error: %s", e)))
+}
+
+#output table as gct format
+header1 <- "#1.2"
+nrows <- dim(table)[1]
+ncols <- dim(table)[2] -2
+header2 <- paste(nrows, ncols, collapse = " ")
+outfile <- file.path(data_dir,"all.gct")
+cat(header1, header2, file=outfile, sep="\n")
+write.table(table,file=outfile, append=T, row.names=F, quote=F)
+```
+
+### Batch.csv creation
+* Take the third line (head -3 | tail -1).
+* Replace tab with line feed.
+* Skip first two lines (tail -n +3).
+* Place each word in quotes: 
+```{bash batch.csv_creation}
+cat << EOF > $Data_Dir/batches.csv
+"Name","DEMETER batch"
+EOF
+
+head -3 $Data_Dir/all.gct | tail -1| sed -re "s/ /\n/g" | tail -n +3| sed  's/\(.*\)/"\1",1/g' >> $Data_Dir/batches.csv
+head $Data_Dir/batches.csv
+```
+### Correct format of all.csv
+The file all.gct file needed modification. First column needs to have the sequence and gene name joined by an underscore.
+```{r correct_csv_format}
+table <- read.table(file.path(data_dir,"all.gct"),header=T, skip=2, check.names=F, as.is=T)
+table[1:3,1:3]
+table[,1] <- paste0(table[,1],'_',table[,2])
+table[1:3,1:3]
+outfile <- file.path(data_dir,"all.gct")
+cat(header1, header2, file=outfile, sep="\n")
+write.table(table,file=outfile, append=T, row.names=F, quote=F)
+opts_knit$set(root.dir = opts_knit$get("demeter.dir"))
+```
+
+Preprocess the data from raw GCT files from Achilles into an R structure that DEMETER operates on
+```{bash demeter_preprocess}
+$Src_Dir/demeter/preprocess-gcts $Data_Dir/reformatted.Rdata $Data_Dir/batches.csv $Data_Dir/all.gct
+```
+Generate the final z-scored gene solutions, using the parameters used for the Achilles data 
+```{bash demeter_final}
+cd $Src_Dir/demeter
+./eval-demeter-final --full.data.file=$Data_Dir/reformatted.Rdata \
+     --dest.dir=$Data_Dir/final --learning.rate=0.005 --randseed=1 \
+     --G.S=4e-5 --alpha.beta.gamma=0.9 --max.num.iter=250
